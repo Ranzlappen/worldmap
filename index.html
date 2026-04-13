@@ -48,7 +48,7 @@
     </div>
   </div>
 
-  <div id="map"><svg id="map-svg"></svg></div>
+  <div id="map"><canvas id="map-canvas"></canvas><svg id="map-svg"></svg></div>
 </div>
 
 <!-- Right panel -->
@@ -78,7 +78,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/topojson/3.0.2/topojson.min.js"></script>
-<script src="app.js"></script>
+<script type="module" src="js/main.js"></script>
 <script src="install-prompt.js"></script>
 <script>
 if ('serviceWorker' in navigator) {
