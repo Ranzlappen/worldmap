@@ -1,5 +1,4 @@
 import { getSelectedId } from './filters.js';
-import { LABEL_CATEGORIES } from '../data/labels.js';
 
 let sheetOpen = false;
 let sheetTab = 'filters';
