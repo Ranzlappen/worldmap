@@ -1,28 +1,38 @@
-import { ZOOM_LEVELS } from '../config.js';
-import { LABEL_DATA, LABEL_CATEGORIES } from '../data/labels.js';
+import { VW, VH } from '../config.js';
+import { LABEL_DATA } from '../data/labels.js';
 
 // ──────────────────────────────────────
 // Canvas base map renderer
 // ──────────────────────────────────────
 // Draws countries, borders, graticule, and geographic labels to a canvas.
-
-export function initCanvasRenderer() {
-  // placeholder for future atlas management
-}
+// The canvas must render in the same coordinate space as the SVG viewBox
+// (0,0 to VW,VH) so that it aligns with the SVG overlay.
 
 export function renderCanvas(ctx, canvas, countries, borders, proj, pathFactory, transform, opts) {
   const {
-    activeSpheres, ISO_SPHERE, SPHERES, NODES, nodeMap,
-    zoomLevel = 1, activeLabels, visibleBounds
+    activeSpheres, ISO_SPHERE, SPHERES,
+    zoomLevel = 1, activeLabels, visibleBounds, skipLabels = false
   } = opts;
 
-  const w = canvas.width / devicePixelRatio;
-  const h = canvas.height / devicePixelRatio;
+  const dpr = devicePixelRatio;
+  const pw = canvas.width;   // pixel width
+  const ph = canvas.height;  // pixel height
 
-  ctx.save();
-  ctx.clearRect(0, 0, w, h);
+  // Reset transform and clear
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, pw, ph);
 
-  // Apply zoom transform
+  // Map viewBox coords to pixel coords (mimic SVG preserveAspectRatio xMidYMid meet)
+  const sx = pw / VW;
+  const sy = ph / VH;
+  const s = Math.min(sx, sy);
+  const ox = (pw - VW * s) / 2;
+  const oy = (ph - VH * s) / 2;
+
+  ctx.translate(ox, oy);
+  ctx.scale(s, s);
+
+  // Now in viewBox coordinate space — apply D3 zoom transform
   ctx.translate(transform.x, transform.y);
   ctx.scale(transform.k, transform.k);
 
@@ -69,8 +79,10 @@ export function renderCanvas(ctx, canvas, countries, borders, proj, pathFactory,
     ctx.stroke();
   }
 
-  // -- Geographic labels --
-  renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds, countries);
+  // -- Geographic labels (skip during active zoom for performance) --
+  if (!skipLabels) {
+    renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds, countries);
+  }
 
   ctx.restore();
 }

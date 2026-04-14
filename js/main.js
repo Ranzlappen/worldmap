@@ -11,7 +11,7 @@ import { NODES, nodeMap } from './data/nodes.js';
 import { CONNECTIONS } from './data/connections.js';
 import { ISO_SPHERE } from './data/iso-sphere.js';
 import { createProjection } from './map/projection.js';
-import { setupZoom, getZoomLevel, getCurrentTransform } from './map/zoom.js';
+import { getZoomLevel } from './map/zoom.js';
 import { drawNodes, drawArcs, applyFilters, deselect } from './map/svg-overlay.js';
 import { renderCanvas } from './map/canvas-renderer.js';
 import {
@@ -46,32 +46,58 @@ const gArc  = root.append('g');
 const gNode = root.append('g');
 
 // State
-let worldData = null;   // current TopoJSON features
 let countries = null;
 let borders = null;
+let rafId = null;
+let zoomEndTimer = null;
+
+// ──────────────────────────────────────
+// Canvas render helpers
+// ──────────────────────────────────────
+
+function getCanvasOpts(transform, skipLabels) {
+  return {
+    activeSpheres, ISO_SPHERE, SPHERES,
+    zoomLevel: getZoomLevel(transform.k),
+    activeLabels,
+    visibleBounds: getVisibleBounds(transform, canvas.width, canvas.height, proj),
+    skipLabels
+  };
+}
+
+function fullCanvasRender(transform) {
+  renderCanvas(ctx, canvas, countries, borders, proj, path, transform, getCanvasOpts(transform, false));
+}
 
 // ──────────────────────────────────────
 // Zoom handler
 // ──────────────────────────────────────
 
-function onZoom(transform) {
+function onZoom(e) {
+  const transform = e.transform;
+  // SVG overlay moves instantly via transform attribute
   root.attr('transform', transform);
-  // During zoom: CSS-transform the canvas for instant feedback
-  canvas.style.transform = `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`;
-  canvas.style.transformOrigin = '0 0';
+
+  // rAF-throttled canvas redraw (skip labels during active zoom for performance)
+  if (!rafId) {
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      if (countries) {
+        renderCanvas(ctx, canvas, countries, borders, proj, path, transform, getCanvasOpts(transform, true));
+      }
+    });
+  }
+
+  // Debounced zoom-end: full redraw with labels + counter-scaling
+  clearTimeout(zoomEndTimer);
+  zoomEndTimer = setTimeout(() => onZoomEnd(transform), 150);
 }
 
 function onZoomEnd(transform) {
-  // On zoom end: redraw canvas at full resolution
-  canvas.style.transform = '';
-  renderCanvas(ctx, canvas, countries, borders, proj, path, transform, {
-    activeSpheres, ISO_SPHERE, SPHERES, NODES, nodeMap,
-    zoomLevel: getZoomLevel(transform.k),
-    activeLabels,
-    visibleBounds: getVisibleBounds(transform, canvas.width, canvas.height, proj)
-  });
+  if (!countries) return;
+  fullCanvasRender(transform);
 
-  // Counter-scale SVG overlay elements
+  // Counter-scale SVG overlay elements so they stay readable
   const k = transform.k;
   gNode.selectAll('.nd-core').attr('r', 5 / k);
   gNode.selectAll('.nd-ring').attr('r', 8.5 / k).attr('stroke-width', 1 / k);
@@ -85,7 +111,11 @@ function onZoomEnd(transform) {
   });
 }
 
-const { zoomBehavior } = setupZoom(svg, SCALE_EXTENT, onZoom, onZoomEnd);
+// Setup zoom directly (simpler than going through zoom.js indirection)
+const zoomBehavior = d3.zoom()
+  .scaleExtent(SCALE_EXTENT)
+  .on('zoom', onZoom);
+svg.call(zoomBehavior).on('dblclick.zoom', null);
 
 // Click on empty space deselects
 svg.on('click', e => {
@@ -104,17 +134,17 @@ svg.on('click', e => {
 
 function resizeCanvas() {
   const rect = mapDiv.getBoundingClientRect();
-  canvas.width = rect.width * devicePixelRatio;
-  canvas.height = rect.height * devicePixelRatio;
+  const dpr = devicePixelRatio;
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
   canvas.style.width = rect.width + 'px';
   canvas.style.height = rect.height + 'px';
-  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
 }
 
 window.addEventListener('resize', debounce(() => {
   resizeCanvas();
-  const transform = getCurrentTransform(svg);
-  onZoomEnd(transform);
+  const transform = d3.zoomTransform(svg.node());
+  fullCanvasRender(transform);
 }, 150));
 
 // ──────────────────────────────────────
@@ -153,12 +183,7 @@ async function init() {
   // Size canvas and do initial base map render
   resizeCanvas();
   const transform = d3.zoomIdentity;
-  renderCanvas(ctx, canvas, countries, borders, proj, path, transform, {
-    activeSpheres, ISO_SPHERE, SPHERES, NODES, nodeMap,
-    zoomLevel: 1,
-    activeLabels,
-    visibleBounds: null
-  });
+  fullCanvasRender(transform);
 
   // Draw interactive SVG overlay
   drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
@@ -180,9 +205,9 @@ async function init() {
         updateInfoPanel(node, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
       }
     }
-    // Re-render canvas for label toggle changes
-    const t = getCurrentTransform(svg);
-    onZoomEnd(t);
+    // Re-render canvas for label/sphere toggle changes
+    const t = d3.zoomTransform(svg.node());
+    fullCanvasRender(t);
   }, () => {
     drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
     const selectedId = getSelectedId();
