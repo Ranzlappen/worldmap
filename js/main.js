@@ -10,10 +10,11 @@ import { LAYERS } from './data/layers.js';
 import { NODES, nodeMap } from './data/nodes.js';
 import { CONNECTIONS } from './data/connections.js';
 import { ISO_SPHERE } from './data/iso-sphere.js';
+import { LABEL_DATA } from './data/labels.js';
 import { createProjection } from './map/projection.js';
 import { getZoomLevel } from './map/zoom.js';
 import { drawNodes, drawArcs, applyFilters, deselect } from './map/svg-overlay.js';
-import { renderCanvas } from './map/canvas-renderer.js';
+import { renderLabels, updateLabelVisibility } from './map/labels-layer.js';
 import {
   activeSpheres, activeLayers, activeLabels,
   getSelectedId, setSelectedId
@@ -22,100 +23,72 @@ import { buildSidebar } from './ui/sidebar.js';
 import { updateInfoPanel } from './ui/info-panel.js';
 import { buildMobileSheet, openSheet, switchTab } from './ui/mobile-sheet.js';
 import { initTooltip } from './ui/tooltip.js';
-import { debounce } from './util/debounce.js';
-import { getVisibleBounds } from './util/viewport.js';
 
 // ──────────────────────────────────────
-// INIT
+// SVG SETUP
 // ──────────────────────────────────────
 
-const svg = d3.select('#map-svg').attr('viewBox', `0 0 ${VW} ${VH}`)
+const svg = d3.select('#map-svg')
+  .attr('viewBox', `0 0 ${VW} ${VH}`)
   .attr('preserveAspectRatio', 'xMidYMid meet');
 
 const { proj, path } = createProjection(VW, VH);
 
 const root = svg.append('g').attr('id', 'root');
 
-// Canvas element for base map
-const mapDiv = document.getElementById('map');
-const canvas = document.getElementById('map-canvas');
-const ctx = canvas.getContext('2d');
-
-// SVG groups for interactive overlay (arcs + nodes only)
-const gArc  = root.append('g');
-const gNode = root.append('g');
+// SVG layer groups (back to front)
+const gGrat  = root.append('g');
+const gLand  = root.append('g');
+const gBord  = root.append('g');
+const gLabel = root.append('g').attr('id', 'g-labels');
+const gArc   = root.append('g');
+const gNode  = root.append('g');
 
 // State
 let countries = null;
 let borders = null;
-let rafId = null;
-let zoomEndTimer = null;
+let currentZoomLevel = 1;
 
 // ──────────────────────────────────────
-// Canvas render helpers
+// ZOOM
 // ──────────────────────────────────────
 
-function getCanvasOpts(transform, skipLabels) {
-  return {
-    activeSpheres, ISO_SPHERE, SPHERES,
-    zoomLevel: getZoomLevel(transform.k),
-    activeLabels,
-    visibleBounds: getVisibleBounds(transform, canvas.width, canvas.height, proj),
-    skipLabels
-  };
-}
-
-function fullCanvasRender(transform) {
-  renderCanvas(ctx, canvas, countries, borders, proj, path, transform, getCanvasOpts(transform, false));
-}
-
-// ──────────────────────────────────────
-// Zoom handler
-// ──────────────────────────────────────
-
-function onZoom(e) {
-  const transform = e.transform;
-  // SVG overlay moves instantly via transform attribute
-  root.attr('transform', transform);
-
-  // rAF-throttled canvas redraw (skip labels during active zoom for performance)
-  if (!rafId) {
-    rafId = requestAnimationFrame(() => {
-      rafId = null;
-      if (countries) {
-        renderCanvas(ctx, canvas, countries, borders, proj, path, transform, getCanvasOpts(transform, true));
-      }
-    });
-  }
-
-  // Debounced zoom-end: full redraw with labels + counter-scaling
-  clearTimeout(zoomEndTimer);
-  zoomEndTimer = setTimeout(() => onZoomEnd(transform), 150);
-}
-
-function onZoomEnd(transform) {
-  if (!countries) return;
-  fullCanvasRender(transform);
-
-  // Counter-scale SVG overlay elements so they stay readable
-  const k = transform.k;
-  gNode.selectAll('.nd-core').attr('r', 5 / k);
-  gNode.selectAll('.nd-ring').attr('r', 8.5 / k).attr('stroke-width', 1 / k);
-  gNode.selectAll('.nd-halo').attr('r', 15 / k);
-  gNode.selectAll('.nd-label').attr('font-size', (7 / k) + 'px').attr('y', 12 / k);
-
-  gArc.selectAll('.arc').each(function () {
-    const el = d3.select(this);
-    const baseWidth = parseFloat(el.attr('data-base-width') || 1.2);
-    el.attr('stroke-width', baseWidth / k);
-  });
-}
-
-// Setup zoom directly (simpler than going through zoom.js indirection)
-const zoomBehavior = d3.zoom()
+const zoom = d3.zoom()
   .scaleExtent(SCALE_EXTENT)
-  .on('zoom', onZoom);
-svg.call(zoomBehavior).on('dblclick.zoom', null);
+  .on('zoom', e => {
+    root.attr('transform', e.transform);
+
+    // Counter-scale nodes and labels so they stay readable
+    const k = e.transform.k;
+    const newLevel = getZoomLevel(k);
+
+    gNode.selectAll('.nd-core').attr('r', 5 / k);
+    gNode.selectAll('.nd-ring').attr('r', 8.5 / k).attr('stroke-width', 1 / k);
+    gNode.selectAll('.nd-halo').attr('r', 15 / k);
+    gNode.selectAll('.nd-label').attr('font-size', (7 / k) + 'px').attr('y', 12 / k);
+    gArc.selectAll('.arc').each(function () {
+      const el = d3.select(this);
+      const bw = parseFloat(el.attr('data-base-width') || 1.2);
+      el.attr('stroke-width', bw / k);
+    });
+
+    // Update geographic label visibility when zoom level changes
+    if (newLevel !== currentZoomLevel) {
+      currentZoomLevel = newLevel;
+      updateLabelVisibility(gLabel, currentZoomLevel, k, activeLabels);
+    }
+    // Counter-scale label font sizes
+    gLabel.selectAll('.geo-label').attr('transform', function () {
+      const x = this.getAttribute('data-x');
+      const y = this.getAttribute('data-y');
+      return `translate(${x},${y}) scale(${1/k})`;
+    });
+    gLabel.selectAll('.capital-dot, .city-dot').attr('r', function () {
+      return parseFloat(this.getAttribute('data-r')) / k;
+    });
+  });
+
+svg.call(zoom).on('dblclick.zoom', null);
 
 // Click on empty space deselects
 svg.on('click', e => {
@@ -129,26 +102,7 @@ svg.on('click', e => {
 });
 
 // ──────────────────────────────────────
-// Resize handler
-// ──────────────────────────────────────
-
-function resizeCanvas() {
-  const rect = mapDiv.getBoundingClientRect();
-  const dpr = devicePixelRatio;
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  canvas.style.width = rect.width + 'px';
-  canvas.style.height = rect.height + 'px';
-}
-
-window.addEventListener('resize', debounce(() => {
-  resizeCanvas();
-  const transform = d3.zoomTransform(svg.node());
-  fullCanvasRender(transform);
-}, 150));
-
-// ──────────────────────────────────────
-// Node selection callback
+// NODE SELECTION
 // ──────────────────────────────────────
 
 function handleSelectNode(node) {
@@ -165,7 +119,55 @@ function handleSelectNode(node) {
 }
 
 // ──────────────────────────────────────
-// Load atlas and bootstrap
+// Redraw helpers (called by sidebar/filter changes)
+// ──────────────────────────────────────
+
+function redrawAll() {
+  drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
+  drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
+  // Re-apply counter-scaling for current zoom
+  const t = d3.zoomTransform(svg.node());
+  const k = t.k;
+  gNode.selectAll('.nd-core').attr('r', 5 / k);
+  gNode.selectAll('.nd-ring').attr('r', 8.5 / k).attr('stroke-width', 1 / k);
+  gNode.selectAll('.nd-halo').attr('r', 15 / k);
+  gNode.selectAll('.nd-label').attr('font-size', (7 / k) + 'px').attr('y', 12 / k);
+  gArc.selectAll('.arc').each(function () {
+    const el = d3.select(this);
+    const bw = parseFloat(el.attr('data-base-width') || 1.2);
+    el.attr('stroke-width', bw / k);
+  });
+  const sel = getSelectedId();
+  if (sel) {
+    const node = nodeMap[sel];
+    if (!node || !activeSpheres.has(node.sphere)) {
+      setSelectedId(null);
+      applyFilters(gArc, gNode, activeSpheres, activeLayers, CONNECTIONS, nodeMap, null);
+      updateInfoPanel(null);
+    } else {
+      updateInfoPanel(node, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
+    }
+  }
+}
+
+function redrawArcs() {
+  drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
+  const t = d3.zoomTransform(svg.node());
+  gArc.selectAll('.arc').each(function () {
+    const el = d3.select(this);
+    const bw = parseFloat(el.attr('data-base-width') || 1.2);
+    el.attr('stroke-width', bw / t.k);
+  });
+  const sel = getSelectedId();
+  if (sel) updateInfoPanel(nodeMap[sel], LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
+}
+
+function onLabelToggle() {
+  updateLabelVisibility(gLabel, currentZoomLevel, d3.zoomTransform(svg.node()).k, activeLabels);
+}
+
+// ──────────────────────────────────────
+// INIT
 // ──────────────────────────────────────
 
 async function init() {
@@ -180,53 +182,44 @@ async function init() {
   countries = topojson.feature(world, world.objects.countries);
   borders = topojson.mesh(world, world.objects.countries, (a, b) => a !== b);
 
-  // Size canvas and do initial base map render
-  resizeCanvas();
-  const transform = d3.zoomIdentity;
-  fullCanvasRender(transform);
+  // Base map: sphere background + graticule
+  gGrat.append('path').datum({ type: 'Sphere' }).attr('class', 'sphere-bg').attr('d', path);
+  gGrat.append('path').datum(d3.geoGraticule().step([30, 30])()).attr('class', 'graticule').attr('d', path);
 
-  // Draw interactive SVG overlay
+  // Countries with sphere-based fill
+  gLand.selectAll('path')
+    .data(countries.features).join('path')
+    .attr('class', 'cpath').attr('d', path)
+    .each(function (d) {
+      const sk = ISO_SPHERE[+d.id];
+      const c = sk ? SPHERES[sk].color : '#1C2E44';
+      d3.select(this)
+        .attr('fill', c).attr('fill-opacity', sk ? 0.18 : 0.09)
+        .attr('stroke', c).attr('stroke-opacity', sk ? 0.25 : 0.10)
+        .attr('stroke-width', 0.4).attr('data-sphere', sk || '');
+    });
+
+  // Borders
+  gBord.append('path').datum(borders).attr('class', 'border-mesh').attr('d', path);
+
+  // Geographic labels (SVG text elements)
+  renderLabels(gLabel, LABEL_DATA, proj);
+  updateLabelVisibility(gLabel, currentZoomLevel, 1, activeLabels);
+
+  // Interactive overlay
   drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
   drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
   initTooltip(svg, SPHERES);
 
-  // Build UI
-  buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, activeLabels, () => {
-    drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-    const selectedId = getSelectedId();
-    if (selectedId) {
-      const node = nodeMap[selectedId];
-      if (!node || !activeSpheres.has(node.sphere)) {
-        setSelectedId(null);
-        applyFilters(gArc, gNode, activeSpheres, activeLayers, CONNECTIONS, nodeMap, null);
-        updateInfoPanel(null);
-      } else {
-        updateInfoPanel(node, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
-      }
-    }
-    // Re-render canvas for label/sphere toggle changes
-    const t = d3.zoomTransform(svg.node());
-    fullCanvasRender(t);
-  }, () => {
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-    const selectedId = getSelectedId();
-    if (selectedId) updateInfoPanel(nodeMap[selectedId], LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
-  });
-
-  buildMobileSheet(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, nodeMap, () => {
-    drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-  }, () => {
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-    const selectedId = getSelectedId();
-    if (selectedId) updateInfoPanel(nodeMap[selectedId], LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
-  });
+  // UI
+  buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, activeLabels,
+    redrawAll, redrawArcs, onLabelToggle);
+  buildMobileSheet(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, nodeMap,
+    redrawAll, redrawArcs);
 
   // Stats
   const totals = Object.fromEntries(Object.entries(CONNECTIONS).map(([k, v]) => [k, v.length]));
-  const totalCount = Object.values(totals).reduce((a, b) => a + b, 0);
-  console.log('Connection totals:', totals, 'Total:', totalCount);
+  console.log('Connection totals:', totals, 'Total:', Object.values(totals).reduce((a, b) => a + b, 0));
   document.getElementById('stat-nodes').textContent = NODES.length;
 
   // Close info panel

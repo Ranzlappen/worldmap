@@ -22,6 +22,7 @@ if (workbox) {
     { url: '/js/map/zoom.js', revision: '1' },
     { url: '/js/map/svg-overlay.js', revision: '1' },
     { url: '/js/map/canvas-renderer.js', revision: '1' },
+    { url: '/js/map/labels-layer.js', revision: '1' },
     { url: '/js/ui/filters.js', revision: '1' },
     { url: '/js/ui/sidebar.js', revision: '1' },
     { url: '/js/ui/info-panel.js', revision: '1' },

@@ -1,6 +1,6 @@
 import { LABEL_CATEGORIES } from '../data/labels.js';
 
-export function buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, activeLabels, onSphereChange, onLayerChange) {
+export function buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, activeLabels, onSphereChange, onLayerChange, onLabelChange) {
   // ── Spheres ──
   const sg = document.getElementById('sph-leg');
   Object.entries(SPHERES).forEach(([k, s]) => {
@@ -44,7 +44,7 @@ export function buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, active
   });
 
   // ── Labels ──
-  buildLabelToggles(activeLabels, onSphereChange);
+  buildLabelToggles(activeLabels, onLabelChange || onSphereChange);
 }
 
 function buildLabelToggles(activeLabels, onLabelChange) {

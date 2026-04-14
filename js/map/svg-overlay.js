@@ -105,6 +105,14 @@ export function applyFilters(gArc, gNode, activeSpheres, activeLayers, CONNECTIO
       d3.select(this).attr('opacity', (id === selectedId || conn.has(id)) ? 1 : .15);
     });
   }
+
+  // Update country land fill based on active spheres
+  d3.selectAll('.cpath').each(function () {
+    const sk = d3.select(this).attr('data-sphere');
+    if (!sk) return;
+    const on = activeSpheres.has(sk);
+    d3.select(this).attr('fill-opacity', on ? 0.18 : 0.04).attr('stroke-opacity', on ? 0.25 : 0.06);
+  });
 }
 
 export function getConnected(id, CONNECTIONS) {
