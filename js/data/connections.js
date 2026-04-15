@@ -360,3 +360,16 @@ export function buildConnections(){
 }
 
 export const CONNECTIONS = buildConnections();
+
+// Precomputed adjacency index: nodeId → Set<connectedNodeId>
+// Avoids O(n*m) getConnected() calls in applyFilters
+export const CONNECTION_INDEX = (() => {
+  const idx = {};
+  for (const [, arcs] of Object.entries(CONNECTIONS)) {
+    for (const [a, b] of arcs) {
+      (idx[a] ??= new Set()).add(b);
+      (idx[b] ??= new Set()).add(a);
+    }
+  }
+  return idx;
+})();

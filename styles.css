@@ -141,10 +141,10 @@ body{background:var(--bg);color:var(--text);font-family:'IBM Plex Mono',monospac
 
 /*  TOOLTIP  */
 #tip{
-  position:fixed;background:var(--s2);border:1px solid var(--border);
+  position:fixed;left:0;top:0;background:var(--s2);border:1px solid var(--border);
   padding:.4rem .65rem;border-radius:4px;font-size:.6rem;
   pointer-events:none;opacity:0;transition:opacity .1s;z-index:9999;
-  line-height:1.55;max-width:180px;
+  line-height:1.55;max-width:180px;will-change:transform;
 }
 #tip.show{opacity:1;}
 

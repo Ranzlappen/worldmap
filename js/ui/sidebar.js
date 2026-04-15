@@ -11,9 +11,8 @@ export function buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, active
     d.addEventListener('click', () => {
       const on = activeSpheres.has(k);
       if (on) activeSpheres.delete(k); else activeSpheres.add(k);
-      d.classList.toggle('on', !on === false);
-      d.classList.toggle('off', on);
       d.classList.toggle('on', !on);
+      d.classList.toggle('off', on);
       onSphereChange();
     });
     sg.appendChild(d);

@@ -54,20 +54,26 @@ export function renderCanvas(ctx, canvas, countries, borders, proj, pathFactory,
   canvasPath(grat);
   ctx.stroke();
 
-  // -- Countries --
+  // -- Countries (batched by sphere for fewer draw calls) --
   if (countries) {
+    const groups = new Map();
     countries.features.forEach(feature => {
       const sk = ISO_SPHERE[+feature.id];
       const c = sk ? SPHERES[sk]?.color : '#1C2E44';
-      const on = sk ? activeSpheres.has(sk) : false;
-
-      ctx.fillStyle = c;
-      ctx.globalAlpha = on ? 0.18 : 0.04;
-      ctx.beginPath();
-      canvasPath(feature);
-      ctx.fill();
-      ctx.globalAlpha = 1;
+      const alpha = (sk && activeSpheres.has(sk)) ? 0.18 : 0.04;
+      const key = c + alpha;
+      let g = groups.get(key);
+      if (!g) { g = { color: c, alpha, features: [] }; groups.set(key, g); }
+      g.features.push(feature);
     });
+    groups.forEach(({ color, alpha, features }) => {
+      ctx.fillStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      features.forEach(f => canvasPath(f));
+      ctx.fill();
+    });
+    ctx.globalAlpha = 1;
   }
 
   // -- Borders --
@@ -81,7 +87,7 @@ export function renderCanvas(ctx, canvas, countries, borders, proj, pathFactory,
 
   // -- Geographic labels (skip during active zoom for performance) --
   if (!skipLabels) {
-    renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds, countries);
+    renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds);
   }
 
   ctx.restore();
@@ -91,192 +97,102 @@ export function renderCanvas(ctx, canvas, countries, borders, proj, pathFactory,
 // Label rendering
 // ──────────────────────────────────────
 
-function renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds, countries) {
+// Label category descriptors — font and fill are set once per category
+const LABEL_CONFIGS = [
+  { key: 'countryNames', dataKey: 'countryNames', categoryMinZoom: 3, align: 'center',
+    font: k => `400 ${Math.max(3, 8 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(122,155,184,${Math.min(1, (k - 2) / .5) * .6})`, marker: null },
+  { key: 'oceans', dataKey: 'oceans', categoryMinZoom: 0, align: 'center',
+    font: k => `italic 300 ${Math.max(5, 14 / k)}px "IBM Plex Mono",monospace`,
+    fill: () => 'rgba(74,144,217,0.35)', marker: null },
+  { key: 'oceans', dataKey: 'seas', categoryMinZoom: 0, align: 'center',
+    font: k => `italic 300 ${Math.max(3.5, 9 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(74,144,217,${Math.min(1, (k - 2) / .5) * .28})`, marker: null },
+  { key: 'capitals', dataKey: 'capitals', categoryMinZoom: 0, align: 'left',
+    font: k => `500 ${Math.max(3, 6 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(200,168,75,${Math.min(1, (k - 3.5) / .5) * .7})`,
+    marker: k => Math.max(1, 2 / k) },
+  { key: 'cities', dataKey: 'cities', categoryMinZoom: 0, align: 'left',
+    font: k => `300 ${Math.max(2.5, 5 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(202,224,245,${Math.min(1, (k - 5) / .5) * .55})`,
+    marker: k => Math.max(.8, 1.5 / k) },
+  { key: 'rivers', dataKey: 'rivers', categoryMinZoom: 0, align: 'center',
+    font: k => `italic 300 ${Math.max(3, 6 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(56,184,216,${Math.min(1, (k - 3.5) / .5) * .4})`, marker: null },
+  { key: 'mountains', dataKey: 'mountains', categoryMinZoom: 0, align: 'center',
+    font: k => `400 ${Math.max(3, 6 / k)}px "IBM Plex Mono",monospace`,
+    fill: k => `rgba(232,150,60,${Math.min(1, (k - 3.5) / .5) * .4})`, marker: null }
+];
+
+function renderLabels(ctx, proj, transform, zoomLevel, activeLabels, visibleBounds) {
   if (!activeLabels || !LABEL_DATA) return;
 
   const k = transform.k;
   const occupiedCells = new Set();
-  const cellSize = 60; // px grid cell for collision avoidance
+  const cellSize = 60;
+
+  // Numeric keys for faster Set lookups
+  function cellKey(col, row) { return col * 100000 + row; }
 
   function isOccupied(sx, sy, textWidth) {
+    const baseCol = Math.floor(sx / cellSize);
+    const row = Math.floor(sy / cellSize);
     const cols = Math.ceil(textWidth / cellSize) + 1;
     for (let dc = 0; dc < cols; dc++) {
-      const key = `${Math.floor(sx / cellSize) + dc},${Math.floor(sy / cellSize)}`;
-      if (occupiedCells.has(key)) return true;
+      if (occupiedCells.has(cellKey(baseCol + dc, row))) return true;
     }
     return false;
   }
 
   function markOccupied(sx, sy, textWidth) {
+    const baseCol = Math.floor(sx / cellSize);
+    const row = Math.floor(sy / cellSize);
     const cols = Math.ceil(textWidth / cellSize) + 1;
     for (let dc = 0; dc < cols; dc++) {
-      occupiedCells.add(`${Math.floor(sx / cellSize) + dc},${Math.floor(sy / cellSize)}`);
+      occupiedCells.add(cellKey(baseCol + dc, row));
     }
   }
 
-  function inBounds(lon, lat) {
-    if (!visibleBounds) return true;
-    return lon >= visibleBounds.west && lon <= visibleBounds.east &&
-           lat >= visibleBounds.south && lat <= visibleBounds.north;
-  }
+  const hasB = !!visibleBounds;
+  const bW = hasB ? visibleBounds.west : 0;
+  const bE = hasB ? visibleBounds.east : 0;
+  const bS = hasB ? visibleBounds.south : 0;
+  const bN = hasB ? visibleBounds.north : 0;
 
-  // Country name labels from TopoJSON centroids
-  if (activeLabels.has('countryNames') && zoomLevel >= 3 && countries) {
-    const fontSize = Math.max(3, 8 / k);
-    ctx.font = `400 ${fontSize}px "IBM Plex Mono", monospace`;
-    ctx.textAlign = 'center';
+  for (const cat of LABEL_CONFIGS) {
+    if (!activeLabels.has(cat.key)) continue;
+    if (zoomLevel < cat.categoryMinZoom) continue;
+    const labels = LABEL_DATA[cat.dataKey];
+    if (!labels) continue;
+
+    // Set font and style once per category
+    ctx.font = cat.font(k);
+    ctx.textAlign = cat.align;
     ctx.textBaseline = 'middle';
+    ctx.fillStyle = cat.fill(k);
+    const dotR = cat.marker ? cat.marker(k) : 0;
 
-    // Fade in between zoom 2.0 and 2.5 (level 3 starts at 2.0)
-    const alpha = Math.min(1, (k - 2.0) / 0.5);
-    ctx.fillStyle = `rgba(122, 155, 184, ${alpha * 0.6})`;
+    for (let i = 0, len = labels.length; i < len; i++) {
+      const label = labels[i];
+      if (zoomLevel < label.minZoom) continue;
+      // Bounds check before projection (cheap)
+      if (hasB && (label.lon < bW || label.lon > bE || label.lat < bS || label.lat > bN)) continue;
+      const pos = proj([label.lon, label.lat]);
+      if (!pos) continue;
+      const tw = ctx.measureText(label.name).width;
+      const totalW = dotR ? tw + dotR * 3 : tw;
 
-    if (LABEL_DATA.countryNames) {
-      LABEL_DATA.countryNames.forEach(label => {
-        if (zoomLevel < label.minZoom) return;
-        if (!inBounds(label.lon, label.lat)) return;
-        const pos = proj([label.lon, label.lat]);
-        if (!pos) return;
-        const tw = ctx.measureText(label.name).width;
-        if (!isOccupied(pos[0], pos[1], tw)) {
+      if (!isOccupied(pos[0], pos[1], totalW)) {
+        if (dotR) {
+          ctx.beginPath();
+          ctx.arc(pos[0], pos[1], dotR, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillText(label.name, pos[0] + dotR * 2, pos[1]);
+        } else {
           ctx.fillText(label.name, pos[0], pos[1]);
-          markOccupied(pos[0], pos[1], tw);
         }
-      });
+        markOccupied(pos[0], pos[1], totalW);
+      }
     }
-  }
-
-  // Oceans
-  if (activeLabels.has('oceans') && LABEL_DATA.oceans) {
-    LABEL_DATA.oceans.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(5, 14 / k);
-      ctx.font = `italic 300 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillStyle = 'rgba(74, 144, 217, 0.35)';
-      const tw = ctx.measureText(label.name).width;
-      if (!isOccupied(pos[0], pos[1], tw)) {
-        ctx.fillText(label.name, pos[0], pos[1]);
-        markOccupied(pos[0], pos[1], tw);
-      }
-    });
-  }
-
-  // Seas
-  if (activeLabels.has('oceans') && LABEL_DATA.seas) {
-    LABEL_DATA.seas.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(3.5, 9 / k);
-      ctx.font = `italic 300 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const alpha = Math.min(1, (k - 2.0) / 0.5);
-      ctx.fillStyle = `rgba(74, 144, 217, ${alpha * 0.28})`;
-      const tw = ctx.measureText(label.name).width;
-      if (!isOccupied(pos[0], pos[1], tw)) {
-        ctx.fillText(label.name, pos[0], pos[1]);
-        markOccupied(pos[0], pos[1], tw);
-      }
-    });
-  }
-
-  // Capitals
-  if (activeLabels.has('capitals') && LABEL_DATA.capitals) {
-    LABEL_DATA.capitals.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(3, 6 / k);
-      ctx.font = `500 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      const alpha = Math.min(1, (k - 3.5) / 0.5);
-      ctx.fillStyle = `rgba(200, 168, 75, ${alpha * 0.7})`;
-      const tw = ctx.measureText(label.name).width;
-      const dotR = Math.max(1, 2 / k);
-      if (!isOccupied(pos[0], pos[1], tw + dotR * 3)) {
-        // Star marker for capitals
-        ctx.beginPath();
-        ctx.arc(pos[0], pos[1], dotR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillText(label.name, pos[0] + dotR * 2, pos[1]);
-        markOccupied(pos[0], pos[1], tw + dotR * 3);
-      }
-    });
-  }
-
-  // Cities
-  if (activeLabels.has('cities') && LABEL_DATA.cities) {
-    LABEL_DATA.cities.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(2.5, 5 / k);
-      ctx.font = `300 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      const alpha = Math.min(1, (k - 5.0) / 0.5);
-      ctx.fillStyle = `rgba(202, 224, 245, ${alpha * 0.55})`;
-      const tw = ctx.measureText(label.name).width;
-      const dotR = Math.max(0.8, 1.5 / k);
-      if (!isOccupied(pos[0], pos[1], tw + dotR * 3)) {
-        ctx.beginPath();
-        ctx.arc(pos[0], pos[1], dotR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillText(label.name, pos[0] + dotR * 2, pos[1]);
-        markOccupied(pos[0], pos[1], tw + dotR * 3);
-      }
-    });
-  }
-
-  // Rivers
-  if (activeLabels.has('rivers') && LABEL_DATA.rivers) {
-    LABEL_DATA.rivers.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(3, 6 / k);
-      ctx.font = `italic 300 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const alpha = Math.min(1, (k - 3.5) / 0.5);
-      ctx.fillStyle = `rgba(56, 184, 216, ${alpha * 0.4})`;
-      const tw = ctx.measureText(label.name).width;
-      if (!isOccupied(pos[0], pos[1], tw)) {
-        ctx.fillText(label.name, pos[0], pos[1]);
-        markOccupied(pos[0], pos[1], tw);
-      }
-    });
-  }
-
-  // Mountains
-  if (activeLabels.has('mountains') && LABEL_DATA.mountains) {
-    LABEL_DATA.mountains.forEach(label => {
-      if (zoomLevel < label.minZoom) return;
-      if (!inBounds(label.lon, label.lat)) return;
-      const pos = proj([label.lon, label.lat]);
-      if (!pos) return;
-      const fontSize = Math.max(3, 6 / k);
-      ctx.font = `400 ${fontSize}px "IBM Plex Mono", monospace`;
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const alpha = Math.min(1, (k - 3.5) / 0.5);
-      ctx.fillStyle = `rgba(232, 150, 60, ${alpha * 0.4})`;
-      const tw = ctx.measureText(label.name).width;
-      if (!isOccupied(pos[0], pos[1], tw)) {
-        ctx.fillText(label.name, pos[0], pos[1]);
-        markOccupied(pos[0], pos[1], tw);
-      }
-    });
   }
 }
