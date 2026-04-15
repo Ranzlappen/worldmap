@@ -12,7 +12,7 @@ import { CONNECTIONS } from './data/connections.js';
 import { ISO_SPHERE } from './data/iso-sphere.js';
 import { createProjection } from './map/projection.js';
 import { getZoomLevel } from './map/zoom.js';
-import { drawNodes, drawArcs, applyFilters, deselect } from './map/svg-overlay.js';
+import { drawNodes, drawArcs, applyFilters, deselect, updateArcVisibility, updateNodeVisibility, getArcData } from './map/svg-overlay.js';
 import { renderCanvas } from './map/canvas-renderer.js';
 import {
   activeSpheres, activeLayers, activeLabels,
@@ -97,17 +97,21 @@ function onZoomEnd(transform) {
   if (!countries) return;
   fullCanvasRender(transform);
 
-  // Counter-scale SVG overlay elements so they stay readable
-  const k = transform.k;
-  gNode.selectAll('.nd-core').attr('r', 5 / k);
-  gNode.selectAll('.nd-ring').attr('r', 8.5 / k).attr('stroke-width', 1 / k);
-  gNode.selectAll('.nd-halo').attr('r', 15 / k);
-  gNode.selectAll('.nd-label').attr('font-size', (7 / k) + 'px').attr('y', 12 / k);
+  // Counter-scale SVG overlay in single passes (no repeated selectAll)
+  const invK = 1 / transform.k;
 
-  gArc.selectAll('.arc').each(function () {
-    const el = d3.select(this);
-    const baseWidth = parseFloat(el.attr('data-base-width') || 1.2);
-    el.attr('stroke-width', baseWidth / k);
+  // Nodes: one traversal per group instead of 4 root-level queries
+  gNode.selectAll('.node').each(function () {
+    const g = d3.select(this);
+    g.select('.nd-core').attr('r', 5 * invK);
+    g.select('.nd-ring').attr('r', 8.5 * invK).attr('stroke-width', invK);
+    g.select('.nd-halo').attr('r', 15 * invK);
+    g.select('.nd-label').attr('font-size', (7 * invK) + 'px').attr('y', 12 * invK);
+  });
+
+  // Arcs: iterate cached data (avoids DOM attribute reads for baseWidth)
+  getArcData().forEach(arc => {
+    arc.el.setAttribute('stroke-width', arc.baseWidth * invK);
   });
 }
 
@@ -188,13 +192,13 @@ async function init() {
   // Draw interactive SVG overlay
   drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
   drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-  initTooltip(svg, SPHERES);
+  initTooltip(svg);
 
-  // Build UI
+  // Build UI — filter toggles update visibility only (no SVG rebuild)
   buildSidebar(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, activeLabels, () => {
-    drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
     const selectedId = getSelectedId();
+    updateNodeVisibility(gNode, activeSpheres, CONNECTIONS, nodeMap, selectedId);
+    updateArcVisibility(gArc, activeSpheres, activeLayers, CONNECTIONS, nodeMap, selectedId);
     if (selectedId) {
       const node = nodeMap[selectedId];
       if (!node || !activeSpheres.has(node.sphere)) {
@@ -209,17 +213,20 @@ async function init() {
     const t = d3.zoomTransform(svg.node());
     fullCanvasRender(t);
   }, () => {
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
     const selectedId = getSelectedId();
+    updateArcVisibility(gArc, activeSpheres, activeLayers, CONNECTIONS, nodeMap, selectedId);
     if (selectedId) updateInfoPanel(nodeMap[selectedId], LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
   });
 
   buildMobileSheet(SPHERES, LAYERS, CONNECTIONS, activeSpheres, activeLayers, nodeMap, () => {
-    drawNodes(gNode, NODES, activeSpheres, SPHERES, proj, handleSelectNode, nodeMap);
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
-  }, () => {
-    drawArcs(gArc, LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, proj, getSelectedId);
     const selectedId = getSelectedId();
+    updateNodeVisibility(gNode, activeSpheres, CONNECTIONS, nodeMap, selectedId);
+    updateArcVisibility(gArc, activeSpheres, activeLayers, CONNECTIONS, nodeMap, selectedId);
+    const t = d3.zoomTransform(svg.node());
+    fullCanvasRender(t);
+  }, () => {
+    const selectedId = getSelectedId();
+    updateArcVisibility(gArc, activeSpheres, activeLayers, CONNECTIONS, nodeMap, selectedId);
     if (selectedId) updateInfoPanel(nodeMap[selectedId], LAYERS, CONNECTIONS, activeLayers, activeSpheres, nodeMap, SPHERES);
   });
 
